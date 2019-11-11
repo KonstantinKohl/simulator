@@ -49,7 +49,8 @@ namespace Simulator.Sensors
         public float MaxDistance = 1000.0f;
 
         IWriter<ImageData> ImageWriter;
-        ImageData Data;
+
+        uint ImageSequence = 0;
 
         IBridge Bridge;
 
@@ -76,21 +77,14 @@ namespace Simulator.Sensors
 
         private Queue<CameraCapture> captureQueue = new Queue<CameraCapture>();
 
+        private Queue<NativeArray<byte>> availableBuffers = new Queue<NativeArray<byte>>();
+
         public void Start()
         {
             Camera = GetComponent<Camera>();
             Camera.enabled = false;
 
             Camera.GetComponent<HDAdditionalCameraData>().customRender += CustomRender;
-
-            Data = new ImageData()
-            {
-                Name = Name,
-                Frame = Frame,
-                Width = Width,
-                Height = Height,
-                Bytes = new byte[MaxJpegSize],
-            };
         }
 
         void CustomRender(ScriptableRenderContext context, HDCamera hd)
@@ -121,6 +115,13 @@ namespace Simulator.Sensors
         public void OnDestroy()
         {
             Camera.targetTexture?.Release();
+
+            while(availableBuffers.Count > 0)
+            {
+                var current = availableBuffers.Peek();
+                current.Dispose();
+                availableBuffers.Dequeue();
+            }
         }
 
         public override void OnBridgeSetup(IBridge bridge)
@@ -145,18 +146,8 @@ namespace Simulator.Sensors
             // if this is not first time
             if (Camera.targetTexture != null)
             {
-                if (Width != Camera.targetTexture.width || Height != Camera.targetTexture.height)
+                if (Width != Camera.targetTexture.width || Height != Camera.targetTexture.height || !Camera.targetTexture.IsCreated())
                 {
-                    // if camera capture size has changed
-                    Data.Width = Width;
-                    Data.Height = Height;
-
-                    Camera.targetTexture.Release();
-                    Camera.targetTexture = null;
-                }
-                else if (!Camera.targetTexture.IsCreated())
-                {
-                    // if we have lost rendertexture due to Unity window resizing or otherwise
                     Camera.targetTexture.Release();
                     Camera.targetTexture = null;
                 }
@@ -212,36 +203,50 @@ namespace Simulator.Sensors
                 }
                 else if(capture.readbackRequest.done)
                 {
-                    var data = capture.readbackRequest.GetData<byte>();
                     captureQueue.Dequeue();
-                    var imageData = new ImageData()
-                    {
-                        Name = Name,
-                        Frame = Frame,
-                        Width = Width,
-                        Height = Height,
-                        Bytes = new byte[MaxJpegSize],
-                        Sequence = Data.Sequence,
-                    };
                     
-                    if (Bridge != null && Bridge.Status == Status.Connected)
+                    //if (Bridge != null && Bridge.Status == Status.Connected)
                     {
+                        var ReadBuffer = capture.readbackRequest.GetData<byte>();
+                        NativeArray<byte> data;
+                        if(availableBuffers.Count == 0)
+                        {
+                            data = new NativeArray<byte>(ReadBuffer.Length, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
+                        }
+                        else
+                        {
+                            data = availableBuffers.Peek();
+                            availableBuffers.Dequeue();
+                        }
+                        data.CopyFrom(ReadBuffer);
+                        var imageData = new ImageData()
+                        {
+                            Name = Name,
+                            Frame = Frame,
+                            Width = Width,
+                            Height = Height,
+                            Bytes = new byte[MaxJpegSize],
+                            Sequence = ImageSequence,
+                        };
+                    
                         Task.Run(() =>
                         {
-                            imageData.Length = JpegEncoder.Encode(data, Width, Height, 4, 100, imageData.Bytes);
+                            imageData.Length = JpegEncoder.Encode(data,  imageData.Width,  imageData.Height, 4, 100, imageData.Bytes);
                             if (imageData.Length > 0)
                             {
                                 imageData.Time = capture.captureTime;
-                                ImageWriter.Write(imageData);
+                                //ImageWriter.Write(imageData);
                             }
                             else
                             {
                                 Debug.Log("Compressed image is empty, length = 0");
                             }
+
+                            availableBuffers.Enqueue(data);
                         });
                     }
-
-                    Data.Sequence++;
+                    
+                    ImageSequence++;
                 }
                 else
                 {
