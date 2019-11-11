@@ -181,7 +181,7 @@ namespace Simulator.Sensors
                 {
                     captureQueue.Dequeue();
                     
-                    //if (Bridge != null && Bridge.Status == Status.Connected)
+                    if (Bridge != null && Bridge.Status == Status.Connected)
                     {
                         var ReadBuffer = capture.readbackRequest.GetData<byte>();
                         NativeArray<byte> data;
@@ -211,7 +211,7 @@ namespace Simulator.Sensors
                             if (imageData.Length > 0)
                             {
                                 imageData.Time = capture.captureTime;
-                                //ImageWriter.Write(imageData);
+                                ImageWriter.Write(imageData);
                             }
                             else
                             {
